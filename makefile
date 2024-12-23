@@ -6,9 +6,9 @@ INCLUDE=-Isrc/fake86
 LIBS=-lpthread -lX11
 SDLFLAGS=`sdl-config --cflags --libs`
 
-all: fake-src imagegen-src
+all: fake86-src imagegen-src
 
-fake-src: bin/fake86-8086 bin/fake86-80186 bin/fake86-v20
+fake86-src: bin/fake86-8086 bin/fake86-80186 bin/fake86-v20
 
 bin/fake86-8086:
 	$(CC) $(SRCFILES) -o bin/fake86-8086 $(CFLAGS) $(INCLUDE) $(LIBS) $(SDLFLAGS) -DCPU_8086
