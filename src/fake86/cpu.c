@@ -51,9 +51,15 @@ uint8_t	RAM[0x100000], readonly[0x100000];
 uint8_t	opcode, segoverride, reptype, bootdrive = 0, hdcount = 0, hltstate = 0;
 uint16_t segregs[4], savecs, saveip, ip, useseg, oldsp;
 uint8_t	tempcf, oldcf, cf, pf, af, zf, sf, tf, ifl, df, of, mode, reg, rm;
+#ifdef CPU_EMULATE_8080
+uint8_t md, mdenable;
+#endif
 uint16_t oper1, oper2, res16, disp16, temp16, dummy, stacksize, frametemp;
 uint8_t	oper1b, oper2b, res8, disp8, temp8, nestlev, addrbyte;
 uint32_t temp1, temp2, temp3, temp4, temp5, temp32, tempaddr32, ea;
+#ifdef CPU_SEGMENT_WRAPAROUND
+int8_t eawraparound; /* 8086 segments wrap around, this makes sure the wrap around is respected */
+#endif
 int32_t	result;
 uint64_t totalexec;
 
@@ -73,25 +79,6 @@ extern void vidinterrupt();
 extern uint8_t readVGA (uint32_t addr32);
 
 void intcall86 (uint8_t intnum);
-
-#define makeflagsword() \
-	( \
-	2 | (uint16_t) cf | ((uint16_t) pf << 2) | ((uint16_t) af << 4) | ((uint16_t) zf << 6) | ((uint16_t) sf << 7) | \
-	((uint16_t) tf << 8) | ((uint16_t) ifl << 9) | ((uint16_t) df << 10) | ((uint16_t) of << 11) \
-	)
-
-#define decodeflagsword(x) { \
-	temp16 = x; \
-	cf = temp16 & 1; \
-	pf = (temp16 >> 2) & 1; \
-	af = (temp16 >> 4) & 1; \
-	zf = (temp16 >> 6) & 1; \
-	sf = (temp16 >> 7) & 1; \
-	tf = (temp16 >> 8) & 1; \
-	ifl = (temp16 >> 9) & 1; \
-	df = (temp16 >> 10) & 1; \
-	of = (temp16 >> 11) & 1; \
-	}
 
 extern void	writeVGA (uint32_t addr32, uint8_t value);
 extern void	portout (uint16_t portnum, uint8_t value);
@@ -129,6 +116,7 @@ void write86 (uint32_t addr32, uint8_t value) {
 }
 
 void writew86 (uint32_t addr32, uint16_t value) {
+	/* warning: does not simulate 8086 wrap around */
 	write86 (addr32, (uint8_t) value);
 	write86 (addr32 + 1, (uint8_t) (value >> 8) );
 }
@@ -505,6 +493,164 @@ void op_sbb16() {
 	flag_sbb16 (oper1, oper2, cf);
 }
 
+#ifdef CPU_EMULATE_8080
+void flag_80log8 (uint8_t value) {
+	flag_szp8 (value);
+	cf = 0;
+	af = 0;
+}
+
+#if 0
+void flag_80and8 (uint8_t value) {
+	flag_szp8 (value);
+	cf = 0;
+	af = 1; /* emulates 8085 behavior */
+}
+#endif
+
+void flag_80adc8 (uint8_t v1, uint8_t v2, uint8_t v3) {
+
+	/* v1 = destination operand, v2 = source operand, v3 = carry flag */
+	uint16_t	dst;
+
+	dst = (uint16_t) v1 + (uint16_t) v2 + (uint16_t) v3;
+	flag_szp8 ( (uint8_t) dst);
+	if (dst & 0xFF00) {
+			cf = 1;
+		}
+	else {
+			cf = 0; /* set or clear carry flag */
+		}
+
+	if ( ( (v1 ^ v2 ^ dst) & 0x10) == 0x10) {
+			af = 1;
+		}
+	else {
+			af = 0; /* set or clear auxilliary flag */
+		}
+}
+
+void flag_80add8 (uint8_t v1, uint8_t v2) {
+	/* v1 = destination operand, v2 = source operand */
+	uint16_t	dst;
+
+	dst = (uint16_t) v1 + (uint16_t) v2;
+	flag_szp8 ( (uint8_t) dst);
+	if (dst & 0xFF00) {
+			cf = 1;
+		}
+	else {
+			cf = 0;
+		}
+
+	if ( ( (v1 ^ v2 ^ dst) & 0x10) == 0x10) {
+			af = 1;
+		}
+	else {
+			af = 0;
+		}
+}
+
+void flag_80add16 (uint16_t v1, uint16_t v2) {
+	/* v1 = destination operand, v2 = source operand */
+	uint32_t	dst;
+
+	dst = (uint32_t) v1 + (uint32_t) v2;
+	if (dst & 0xFFFF0000) {
+			cf = 1;
+		}
+	else {
+			cf = 0;
+		}
+}
+
+void flag_80sub8 (uint8_t v1, uint8_t v2) {
+
+	/* v1 = destination operand, v2 = source operand */
+	uint16_t	dst;
+
+	dst = (uint16_t) v1 - (uint16_t) v2;
+	flag_szp8 ( (uint8_t) dst);
+	if (dst & 0xFF00) {
+			cf = 1;
+		}
+	else {
+			cf = 0;
+		}
+
+	if ( ( (v1 ^ v2 ^ dst) & 0x10) == 0x10) {
+			af = 1;
+		}
+	else {
+			af = 0;
+		}
+}
+
+void flag_80sbb8 (uint8_t v1, uint8_t v2, uint8_t v3) {
+
+	/* v1 = destination operand, v2 = source operand, v3 = carry flag */
+	uint16_t	dst;
+
+	v2 += v3;
+	dst = (uint16_t) v1 - (uint16_t) v2;
+	flag_szp8 ( (uint8_t) dst);
+	if (dst & 0xFF00) {
+			cf = 1;
+		}
+	else {
+			cf = 0;
+		}
+
+	if ( ( (v1 ^ v2 ^ dst) & 0x10) == 0x10) {
+			af = 1;
+		}
+	else {
+			af = 0;
+		}
+}
+
+void op_80adc8() {
+	res8 = oper1b + oper2b + cf;
+	flag_80adc8 (oper1b, oper2b, cf);
+}
+
+void op_80add8() {
+	res8 = oper1b + oper2b;
+	flag_80add8 (oper1b, oper2b);
+}
+
+void op_80add16() {
+	res16 = oper1 + oper2;
+	flag_80add16 (oper1, oper2);
+}
+
+void op_80and8() {
+	res8 = oper1b & oper2b;
+	flag_80log8 (res8);
+	af = ((oper1b | oper2b) >> 3) & 1; /* Intel 8080 behavior */
+}
+
+void op_80or8() {
+	res8 = oper1b | oper2b;
+	flag_80log8 (res8);
+}
+
+void op_80xor8() {
+	res8 = oper1b ^ oper2b;
+	flag_80log8 (res8);
+}
+
+void op_80sub8() {
+	res8 = oper1b - oper2b;
+	flag_80sub8 (oper1b, oper2b);
+}
+
+void op_80sbb8() {
+	res8 = oper1b - (oper2b + cf);
+	flag_80sbb8 (oper1b, oper2b, cf);
+}
+#endif /* CPU_EMULATE_8080 */
+
 void getea (uint8_t rmval) {
 	uint32_t	tempea;
 
@@ -571,6 +717,9 @@ void getea (uint8_t rmval) {
 		}
 
 	ea = (tempea & 0xFFFF) + (useseg << 4);
+#ifdef CPU_SEGMENT_WRAPAROUND
+	eawraparound = (tempea & 0xFFFF) == 0xFFFF;
+#endif
 }
 
 void push (uint16_t pushval) {
@@ -587,10 +736,30 @@ uint16_t pop() {
 	return tempval;
 }
 
+#ifdef CPU_EMULATE_8080
+void push80 (uint16_t pushval) {
+	putreg16 (regbp, regs.wordregs[regbp] - 2);
+	putmem16 (segregs[regds], regs.wordregs[regbp], pushval);
+}
+
+uint16_t pop80() {
+
+	uint16_t	tempval;
+
+	tempval = getmem16 (segregs[regds], regs.wordregs[regbp] );
+	putreg16 (regbp, regs.wordregs[regbp] + 2);
+	return tempval;
+}
+#endif
+
 void reset86() {
-	segregs[regcs] = 0xFFFF;
-	ip = 0x0000;
+	segregs[regcs] = 0xF000;
+	ip = 0xFFF0;
 	hltstate = 0;
+#ifdef CPU_EMULATE_8080
+	md = 1;
+	mdenable = 0;
+#endif
 }
 
 uint16_t readrm16 (uint8_t rmval) {
@@ -617,7 +786,11 @@ void writerm16 (uint8_t rmval, uint16_t value) {
 	if (mode < 3) {
 			getea (rmval);
 			write86 (ea, value & 0xFF);
+#ifndef CPU_SEGMENT_WRAPAROUND
 			write86 (ea + 1, value >> 8);
+#else
+			write86 (eawraparound ? ea - 0xFFFF : ea + 1, value >> 8);
+#endif
 		}
 	else {
 			putreg16 (rmval, value);
@@ -1272,7 +1445,14 @@ void intcall86 (uint8_t intnum) {
 #endif
 		}
 
+//	push (makeflagsword() );
+#ifdef CPU_EMULATE_8080
+	push (makeflagsword() | 0x7000);
+#elif defined CPU_SET_HIGH_FLAGS
+	push (makeflagsword() | 0xF000);
+#else
 	push (makeflagsword() );
+#endif
 	push (segregs[regcs]);
 	push (ip);
 	segregs[regcs] = getmem16 (0, (uint16_t) intnum * 4 + 2);
@@ -1349,6 +1529,1525 @@ void exec86 (uint32_t execloops) {
 
 			if ( (segregs[regcs] == 0xF000) && (ip == 0xE066) ) didbootstrap = 0; //detect if we hit the BIOS entry point to clear didbootstrap because we've rebooted
 
+#ifdef CPU_EMULATE_8080
+			if (!md) {
+				segregs[regcs] = segregs[regcs] & 0xFFFF;
+				ip = ip & 0xFFFF;
+				savecs = segregs[regcs];
+				saveip = ip;
+				opcode = getmem8 (segregs[regcs], ip);
+				StepIP (1);
+				//fprintf(stderr, "?%X? <DE=%X, A=%X, DS=%X>\n", opcode, regs.wordregs[reg80de], regs.byteregs[reg80a], useseg);
+				//if(getchar() == 'q') exit(0);
+				switch (opcode) {
+					case 0x00:	/* 00 NOP */
+					case 0x08:	/* 08 NOP */
+					case 0x10:	/* 10 NOP */
+					case 0x18:	/* 18 NOP */
+					case 0x20:	/* 20 NOP */
+					case 0x28:	/* 28 NOP */
+					case 0x30:	/* 30 NOP */
+					case 0x38:	/* 38 NOP */
+						break;
+
+					case 0x01:	/* 01 LXI B Iw */
+						oper1 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						putreg16 (reg80bc, oper1);
+						break;
+
+					case 0x02:	/* 02 STAX B */
+						putmem8 (useseg, regs.wordregs[reg80bc], regs.byteregs[reg80a]);
+						break;
+
+					case 0x03:	/* 03 INX B */
+						regs.wordregs[reg80bc] ++;
+						break;
+
+					case 0x04:	/* 04 INR B */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80b];
+						oper2b = 1;
+						op_80add8();
+						cf = oldcf;
+						regs.byteregs[reg80b] = res8;
+						break;
+
+					case 0x05:	/* 05 DCR B */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80b];
+						oper2b = 1;
+						op_80sub8();
+						cf = oldcf;
+						regs.byteregs[reg80b] = res8;
+						break;
+
+					case 0x06:	/* 06 MVI B Ib */
+						regs.byteregs[reg80b] = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						break;
+
+					case 0x07:	/* 07 RLC */
+						oper1b = regs.byteregs[reg80a];
+						if (oper1b & 0x80) {
+								cf = 1;
+							}
+						else {
+								cf = 0;
+							}
+
+						oper1b = oper1b << 1;
+						oper1b = oper1b | cf;
+						regs.byteregs[reg80a] = oper1b;
+						break;
+
+					case 0x09:	/* 09 DAD B */
+						oper1 = regs.wordregs[reg80hl];
+						oper2 = regs.wordregs[reg80bc];
+						op_80add16();
+						putreg16 (reg80hl, res16);
+						break;
+
+					case 0x0A:	/* 0A LDAX B */
+						regs.byteregs[reg80a] = getmem16 (useseg, regs.wordregs[reg80bc] );
+						break;
+
+					case 0x0B:	/* 0B DCX B */
+						regs.wordregs[reg80bc] --;
+						break;
+
+					case 0x0C:	/* 0C INR C */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80c];
+						oper2b = 1;
+						op_80add8();
+						cf = oldcf;
+						regs.byteregs[reg80c] = res8;
+						break;
+
+					case 0x0D:	/* 0D DCR C */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80c];
+						oper2b = 1;
+						op_80sub8();
+						cf = oldcf;
+						regs.byteregs[reg80c] = res8;
+						break;
+
+					case 0x0E:	/* 0E MVI C Ib */
+						regs.byteregs[reg80c] = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						break;
+
+					case 0x0F:	/* 0F RRC */
+						oper1b = regs.byteregs[reg80a];
+						cf = oper1b & 1;
+						oper1b = (oper1b >> 1) | (cf << 7);
+						regs.byteregs[reg80a] = oper1b;
+						break;
+
+					case 0x11:	/* 11 LXI D Iw */
+						oper1 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						putreg16 (reg80de, oper1);
+						break;
+
+					case 0x12:	/* 12 STAX D */
+						putmem8 (useseg, regs.wordregs[reg80de], regs.byteregs[reg80a]);
+						break;
+
+					case 0x13:	/* 13 INX D */
+						regs.wordregs[reg80de] ++;
+						break;
+
+					case 0x14:	/* 14 INR D */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80d];
+						oper2b = 1;
+						op_80add8();
+						cf = oldcf;
+						regs.byteregs[reg80d] = res8;
+						break;
+
+					case 0x15:	/* 15 DCR D */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80d];
+						oper2b = 1;
+						op_80sub8();
+						cf = oldcf;
+						regs.byteregs[reg80d] = res8;
+						break;
+
+					case 0x16:	/* 16 MVI D Ib */
+						regs.byteregs[reg80d] = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						break;
+
+					case 0x17:	/* 17 RAL */
+						oper1b = regs.byteregs[reg80a];
+						oldcf = cf;
+						if (oper1b & 0x80) {
+								cf = 1;
+							}
+						else {
+								cf = 0;
+							}
+						oper1b = oper1b << 1;
+						oper1b = oper1b | oldcf;
+						regs.byteregs[reg80a] = oper1b;
+						break;
+
+					case 0x19:	/* 19 DAD D */
+						oper1 = regs.wordregs[reg80hl];
+						oper2 = regs.wordregs[reg80de];
+						op_80add16();
+						putreg16 (reg80hl, res16);
+						break;
+
+					case 0x1A:	/* 1A LDAX D */
+						regs.byteregs[reg80a] = getmem16 (useseg, regs.wordregs[reg80de] );
+						break;
+
+					case 0x1B:	/* 1B DCX D */
+						regs.wordregs[reg80de] --;
+						break;
+
+					case 0x1C:	/* 1C INR E */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80e];
+						oper2b = 1;
+						op_80add8();
+						cf = oldcf;
+						regs.byteregs[reg80e] = res8;
+						break;
+
+					case 0x1D:	/* 1D DCR E */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80e];
+						oper2b = 1;
+						op_80sub8();
+						cf = oldcf;
+						regs.byteregs[reg80e] = res8;
+						break;
+
+					case 0x1E:	/* 1E MVI E Ib */
+						regs.byteregs[reg80e] = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						break;
+
+					case 0x1F:	/* 1F RAR */
+						oper1b = regs.byteregs[reg80a];
+						oldcf = cf;
+						cf = oper1b & 1;
+						oper1b = (oper1b >> 1) | (oldcf << 7);
+						regs.byteregs[reg80a] = oper1b;
+						break;
+
+					case 0x21:	/* 21 LXI H Iw */
+						oper1 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						putreg16 (reg80hl, oper1);
+						break;
+
+					case 0x22:	/* 22 SHLD Ow */
+						putmem16 (useseg, getmem16 (segregs[regcs], ip), regs.wordregs[reg80hl] );
+						StepIP (2);
+						break;
+
+					case 0x23:	/* 13 INX H */
+						regs.wordregs[reg80hl] ++;
+						break;
+
+					case 0x24:	/* 24 INR H */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80h];
+						oper2b = 1;
+						op_80add8();
+						cf = oldcf;
+						regs.byteregs[reg80h] = res8;
+						break;
+
+					case 0x25:	/* 25 DCR H */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80h];
+						oper2b = 1;
+						op_80sub8();
+						cf = oldcf;
+						regs.byteregs[reg80h] = res8;
+						break;
+
+					case 0x26:	/* 26 MVI H Ib */
+						regs.byteregs[reg80h] = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						break;
+
+					case 0x27:	/* 27 DAA */
+						if ( ( (regs.byteregs[reg80a] & 0xF) > 9) || (af == 1) ) {
+								oper1 = regs.byteregs[reg80a] + 6;
+								regs.byteregs[reg80a] = oper1 & 255;
+								if (oper1 & 0xFF00) {
+										cf = 1;
+									}
+								else {
+										cf = 0;
+									}
+
+								af = 1;
+							}
+						else {
+								af = 0;
+							}
+
+						if ( ( (regs.byteregs[reg80a] & 0xF0) > 0x90) || (cf == 1) ) {
+								regs.byteregs[reg80a] = regs.byteregs[reg80a] + 0x60;
+								cf = 1;
+							}
+						else {
+								cf = 0;
+							}
+
+						regs.byteregs[reg80a] = regs.byteregs[reg80a] & 255;
+						flag_szp8 (regs.byteregs[reg80a]);
+						break;
+
+					case 0x29:	/* 29 DAD H */
+						oper1 = regs.wordregs[reg80hl];
+						oper2 = regs.wordregs[reg80hl];
+						op_80add16();
+						putreg16 (reg80hl, res16);
+						break;
+
+					case 0x2A:	/* 2A LHLD Ow */
+						putreg16 (reg80hl, getmem16 (useseg, getmem16 (segregs[regcs], ip) ) );
+						StepIP (2);
+						break;
+
+					case 0x2B:	/* 2B DCX H */
+						regs.wordregs[reg80hl] --;
+						break;
+
+					case 0x2C:	/* 2C INR L */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80l];
+						oper2b = 1;
+						op_80add8();
+						cf = oldcf;
+						regs.byteregs[reg80l] = res8;
+						break;
+
+					case 0x2D:	/* 2D DCR L */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80l];
+						oper2b = 1;
+						op_80sub8();
+						cf = oldcf;
+						regs.byteregs[reg80l] = res8;
+						break;
+
+					case 0x2E:	/* 2E MVI L Ib */
+						regs.byteregs[reg80l] = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						break;
+
+					case 0x2F:	/* 2F CMA */
+						regs.byteregs[reg80a] ^= 0xff;
+						break;
+
+					case 0x31:	/* 31 LXI SP Iw */
+						oper1 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						putreg16 (reg80sp, oper1);
+						break;
+
+					case 0x32:	/* 32 STA Ob */
+						putmem8 (useseg, getmem16 (segregs[regcs], ip), regs.byteregs[reg80a]);
+						StepIP (2);
+						break;
+
+					case 0x33:	/* 33 INX SP */
+						regs.wordregs[reg80sp] ++;
+						break;
+
+					case 0x34:	/* 34 INR M */
+						oldcf = cf;
+						oper1b = getmem8 (useseg, regs.wordregs[reg80hl] );
+						oper2b = 1;
+						op_80add8();
+						cf = oldcf;
+						putmem8 (useseg, regs.wordregs[reg80hl], res8);
+						break;
+
+					case 0x35:	/* 35 DCR M */
+						oldcf = cf;
+						oper1b = getmem8 (useseg, regs.wordregs[reg80hl] );
+						oper2b = 1;
+						op_80sub8();
+						cf = oldcf;
+						putmem8 (useseg, regs.wordregs[reg80hl], res8);
+						break;
+
+					case 0x36:	/* 36 MVI M Ib */
+						putmem8 (useseg, regs.wordregs[reg80hl], getmem8 (segregs[regcs], ip) );
+						StepIP (1);
+						break;
+
+					case 0x37:	/* 37 STC */
+						cf = 1;
+						break;
+
+					case 0x39:	/* 29 DAD SP */
+						oper1 = regs.wordregs[reg80hl];
+						oper2 = regs.wordregs[reg80sp];
+						op_80add16();
+						putreg16 (reg80hl, res16);
+						break;
+
+					case 0x3A:	/* 2A LDA Ob */
+						regs.byteregs[reg80a] = getmem8 (useseg, getmem16 (segregs[regcs], ip) );
+						StepIP (2);
+						break;
+
+					case 0x3B:	/* 3B DCX SP */
+						regs.wordregs[reg80sp] --;
+						break;
+
+					case 0x3C:	/* 3C INR A */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80a];
+						oper2b = 1;
+						op_80add8();
+						cf = oldcf;
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x3D:	/* 3D DCR A */
+						oldcf = cf;
+						oper1b = regs.byteregs[reg80a];
+						oper2b = 1;
+						op_80sub8();
+						cf = oldcf;
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x3E:	/* 3E MVI A Ib */
+						regs.byteregs[reg80a] = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						break;
+
+					case 0x3F:	/* 3F CMC */
+						cf ^= 1;
+						break;
+
+					case 0x40:	/* 40 MOV B B */
+						regs.byteregs[reg80b] = regs.byteregs[reg80b];
+						break;
+
+					case 0x41:	/* 41 MOV B C */
+						regs.byteregs[reg80b] = regs.byteregs[reg80c];
+						break;
+
+					case 0x42:	/* 42 MOV B D */
+						regs.byteregs[reg80b] = regs.byteregs[reg80d];
+						break;
+
+					case 0x43:	/* 43 MOV B E */
+						regs.byteregs[reg80b] = regs.byteregs[reg80e];
+						break;
+
+					case 0x44:	/* 44 MOV B H */
+						regs.byteregs[reg80b] = regs.byteregs[reg80h];
+						break;
+
+					case 0x45:	/* 45 MOV B L */
+						regs.byteregs[reg80b] = regs.byteregs[reg80l];
+						break;
+
+					case 0x46:	/* 46 MOV B M */
+						regs.byteregs[reg80b] = getmem8 (useseg, regs.wordregs[reg80hl]);
+						break;
+
+					case 0x47:	/* 47 MOV B A */
+						regs.byteregs[reg80b] = regs.byteregs[reg80a];
+						break;
+
+					case 0x48:	/* 48 MOV C B */
+						regs.byteregs[reg80c] = regs.byteregs[reg80b];
+						break;
+
+					case 0x49:	/* 49 MOV C C */
+						regs.byteregs[reg80c] = regs.byteregs[reg80c];
+						break;
+
+					case 0x4A:	/* 4A MOV C D */
+						regs.byteregs[reg80c] = regs.byteregs[reg80d];
+						break;
+
+					case 0x4B:	/* 4B MOV C E */
+						regs.byteregs[reg80c] = regs.byteregs[reg80e];
+						break;
+
+					case 0x4C:	/* 4C MOV C H */
+						regs.byteregs[reg80c] = regs.byteregs[reg80h];
+						break;
+
+					case 0x4D:	/* 4D MOV C L */
+						regs.byteregs[reg80c] = regs.byteregs[reg80l];
+						break;
+
+					case 0x4E:	/* 4E MOV C M */
+						regs.byteregs[reg80c] = getmem8 (useseg, regs.wordregs[reg80hl]);
+						break;
+
+					case 0x4F:	/* 4F MOV C A */
+						regs.byteregs[reg80c] = regs.byteregs[reg80a];
+						break;
+
+					case 0x50:	/* 50 MOV D B */
+						regs.byteregs[reg80d] = regs.byteregs[reg80b];
+						break;
+
+					case 0x51:	/* 51 MOV D C */
+						regs.byteregs[reg80d] = regs.byteregs[reg80c];
+						break;
+
+					case 0x52:	/* 52 MOV D D */
+						regs.byteregs[reg80d] = regs.byteregs[reg80d];
+						break;
+
+					case 0x53:	/* 53 MOV D E */
+						regs.byteregs[reg80d] = regs.byteregs[reg80e];
+						break;
+
+					case 0x54:	/* 54 MOV D H */
+						regs.byteregs[reg80d] = regs.byteregs[reg80h];
+						break;
+
+					case 0x55:	/* 55 MOV D L */
+						regs.byteregs[reg80d] = regs.byteregs[reg80l];
+						break;
+
+					case 0x56:	/* 56 MOV D M */
+						regs.byteregs[reg80d] = getmem8 (useseg, regs.wordregs[reg80hl]);
+						break;
+
+					case 0x57:	/* 57 MOV D A */
+						regs.byteregs[reg80d] = regs.byteregs[reg80a];
+						break;
+
+					case 0x58:	/* 58 MOV E B */
+						regs.byteregs[reg80e] = regs.byteregs[reg80b];
+						break;
+
+					case 0x59:	/* 59 MOV E C */
+						regs.byteregs[reg80e] = regs.byteregs[reg80c];
+						break;
+
+					case 0x5A:	/* 5A MOV E D */
+						regs.byteregs[reg80e] = regs.byteregs[reg80d];
+						break;
+
+					case 0x5B:	/* 5B MOV E E */
+						regs.byteregs[reg80e] = regs.byteregs[reg80e];
+						break;
+
+					case 0x5C:	/* 5C MOV E H */
+						regs.byteregs[reg80e] = regs.byteregs[reg80h];
+						break;
+
+					case 0x5D:	/* 5D MOV E L */
+						regs.byteregs[reg80e] = regs.byteregs[reg80l];
+						break;
+
+					case 0x5E:	/* 5E MOV E M */
+						regs.byteregs[reg80e] = getmem8 (useseg, regs.wordregs[reg80hl]);
+						break;
+
+					case 0x5F:	/* 5F MOV E A */
+						regs.byteregs[reg80e] = regs.byteregs[reg80a];
+						break;
+
+					case 0x60:	/* 60 MOV H B */
+						regs.byteregs[reg80h] = regs.byteregs[reg80b];
+						break;
+
+					case 0x61:	/* 61 MOV H C */
+						regs.byteregs[reg80h] = regs.byteregs[reg80c];
+						break;
+
+					case 0x62:	/* 62 MOV H D */
+						regs.byteregs[reg80h] = regs.byteregs[reg80d];
+						break;
+
+					case 0x63:	/* 63 MOV H E */
+						regs.byteregs[reg80h] = regs.byteregs[reg80e];
+						break;
+
+					case 0x64:	/* 64 MOV H H */
+						regs.byteregs[reg80h] = regs.byteregs[reg80h];
+						break;
+
+					case 0x65:	/* 65 MOV H L */
+						regs.byteregs[reg80h] = regs.byteregs[reg80l];
+						break;
+
+					case 0x66:	/* 66 MOV H M */
+						regs.byteregs[reg80h] = getmem8 (useseg, regs.wordregs[reg80hl]);
+						break;
+
+					case 0x67:	/* 67 MOV H A */
+						regs.byteregs[reg80h] = regs.byteregs[reg80a];
+						break;
+
+					case 0x68:	/* 68 MOV L B */
+						regs.byteregs[reg80l] = regs.byteregs[reg80b];
+						break;
+
+					case 0x69:	/* 69 MOV L C */
+						regs.byteregs[reg80l] = regs.byteregs[reg80c];
+						break;
+
+					case 0x6A:	/* 6A MOV L D */
+						regs.byteregs[reg80l] = regs.byteregs[reg80d];
+						break;
+
+					case 0x6B:	/* 6B MOV L E */
+						regs.byteregs[reg80l] = regs.byteregs[reg80e];
+						break;
+
+					case 0x6C:	/* 6C MOV L H */
+						regs.byteregs[reg80l] = regs.byteregs[reg80h];
+						break;
+
+					case 0x6D:	/* 6D MOV L L */
+						regs.byteregs[reg80l] = regs.byteregs[reg80l];
+						break;
+
+					case 0x6E:	/* 6E MOV L M */
+						regs.byteregs[reg80l] = getmem8 (useseg, regs.wordregs[reg80hl]);
+						break;
+
+					case 0x6F:	/* 6F MOV L A */
+						regs.byteregs[reg80l] = regs.byteregs[reg80a];
+						break;
+
+					case 0x70:	/* 70 MOV M B */
+						putmem8 (useseg, regs.wordregs[reg80hl], regs.byteregs[reg80b]);
+						break;
+
+					case 0x71:	/* 71 MOV M C */
+						putmem8 (useseg, regs.wordregs[reg80hl], regs.byteregs[reg80c]);
+						break;
+
+					case 0x72:	/* 72 MOV M D */
+						putmem8 (useseg, regs.wordregs[reg80hl], regs.byteregs[reg80d]);
+						break;
+
+					case 0x73:	/* 73 MOV M E */
+						putmem8 (useseg, regs.wordregs[reg80hl], regs.byteregs[reg80e]);
+						break;
+
+					case 0x74:	/* 74 MOV M H */
+						putmem8 (useseg, regs.wordregs[reg80hl], regs.byteregs[reg80h]);
+						break;
+
+					case 0x75:	/* 75 MOV M L */
+						putmem8 (useseg, regs.wordregs[reg80hl], regs.byteregs[reg80l]);
+						break;
+
+					case 0x76:	/* 76 HLT */
+						ip--;
+						break;
+
+					case 0x77:	/* 77 MOV M A */
+						putmem8 (useseg, regs.wordregs[reg80hl], regs.byteregs[reg80a]);
+						break;
+
+					case 0x78:	/* 78 MOV A B */
+						regs.byteregs[reg80a] = regs.byteregs[reg80b];
+						break;
+
+					case 0x79:	/* 79 MOV A C */
+						regs.byteregs[reg80a] = regs.byteregs[reg80c];
+						break;
+
+					case 0x7A:	/* 7A MOV A D */
+						regs.byteregs[reg80a] = regs.byteregs[reg80d];
+						break;
+
+					case 0x7B:	/* 7B MOV A E */
+						regs.byteregs[reg80a] = regs.byteregs[reg80e];
+						break;
+
+					case 0x7C:	/* 7C MOV A H */
+						regs.byteregs[reg80a] = regs.byteregs[reg80h];
+						break;
+
+					case 0x7D:	/* 7D MOV A L */
+						regs.byteregs[reg80a] = regs.byteregs[reg80l];
+						break;
+
+					case 0x7E:	/* 7E MOV A M */
+						regs.byteregs[reg80a] = getmem8 (useseg, regs.wordregs[reg80hl]);
+						break;
+
+					case 0x7F:	/* 7F MOV A A */
+						regs.byteregs[reg80a] = regs.byteregs[reg80a];
+						break;
+
+					case 0x80:	/* 80 ADD B */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80b];
+						op_80add8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x81:	/* 81 ADD C */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80c];
+						op_80add8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x82:	/* 82 ADD D */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80d];
+						op_80add8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x83:	/* 83 ADD E */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80e];
+						op_80add8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x84:	/* 84 ADD H */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80h];
+						op_80add8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x85:	/* 85 ADD L */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80l];
+						op_80add8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x86:	/* 86 ADD M */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (useseg, regs.wordregs[reg80hl] );
+						op_80add8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x87:	/* 87 ADD A */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80a];
+						op_80add8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x88:	/* 88 ADC B */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80b];
+						op_80adc8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x89:	/* 89 ADC C */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80c];
+						op_80adc8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x8A:	/* 8A ADC D */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80d];
+						op_80adc8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x8B:	/* 8B ADC E */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80e];
+						op_80adc8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x8C:	/* 8C ADC H */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80h];
+						op_80adc8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x8D:	/* 8D ADC L */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80l];
+						op_80adc8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x8E:	/* 8E ADC M */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (useseg, regs.wordregs[reg80hl] );
+						op_80adc8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x8F:	/* 8F ADC A */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80a];
+						op_80adc8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x90:	/* 90 SUB B */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80b];
+						op_80sub8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x91:	/* 91 SUB C */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80c];
+						op_80sub8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x92:	/* 92 SUB D */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80d];
+						op_80sub8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x93:	/* 93 SUB E */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80e];
+						op_80sub8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x94:	/* 94 SUB H */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80h];
+						op_80sub8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x95:	/* 95 SUB L */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80l];
+						op_80sub8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x96:	/* 96 SUB M */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (useseg, regs.wordregs[reg80hl] );
+						op_80sub8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x97:	/* 97 SUB A */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80a];
+						op_80sub8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x98:	/* 98 SBB B */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80b];
+						op_80sbb8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x99:	/* 99 SBB C */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80c];
+						op_80sbb8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x9A:	/* 9A SBB D */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80d];
+						op_80sbb8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x9B:	/* 9B SBB E */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80e];
+						op_80sbb8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x9C:	/* 9C SBB H */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80h];
+						op_80sbb8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x9D:	/* 9D SBB L */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80l];
+						op_80sbb8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x9E:	/* 9E SBB M */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (useseg, regs.wordregs[reg80hl] );
+						op_80sbb8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0x9F:	/* 9F SBB A */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80a];
+						op_80sbb8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xA0:	/* A0 ANA B */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80b];
+						op_80and8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xA1:	/* A1 ANA C */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80c];
+						op_80and8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xA2:	/* A2 ANA D */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80d];
+						op_80and8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xA3:	/* A3 ANA E */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80e];
+						op_80and8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xA4:	/* A4 ANA H */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80h];
+						op_80and8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xA5:	/* A5 ANA L */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80l];
+						op_80and8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xA6:	/* A6 ANA M */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (useseg, regs.wordregs[reg80hl] );
+						op_80and8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xA7:	/* A7 ANA A */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80a];
+						op_80and8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xA8:	/* A8 XRA B */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80b];
+						op_80xor8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xA9:	/* A9 XRA C */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80c];
+						op_80xor8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xAA:	/* AA XRA D */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80d];
+						op_80xor8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xAB:	/* AB XRA E */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80e];
+						op_80xor8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xAC:	/* AC XRA H */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80h];
+						op_80xor8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xAD:	/* AD XRA L */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80l];
+						op_80xor8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xAE:	/* AE XRA M */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (useseg, regs.wordregs[reg80hl] );
+						op_80xor8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xAF:	/* AF XRA A */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80a];
+						op_80xor8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xB0:	/* B0 ANA B */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80b];
+						op_80or8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xB1:	/* B1 ANA C */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80c];
+						op_80or8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xB2:	/* B2 ANA D */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80d];
+						op_80or8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xB3:	/* B3 ANA E */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80e];
+						op_80or8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xB4:	/* B4 ANA H */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80h];
+						op_80or8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xB5:	/* B5 ANA L */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80l];
+						op_80or8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xB6:	/* B6 ANA M */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (useseg, regs.wordregs[reg80hl] );
+						op_80or8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xB7:	/* B7 ANA A */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80a];
+						op_80or8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xB8:	/* B8 CMP B */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80b];
+						op_80sub8();
+						break;
+
+					case 0xB9:	/* B9 CMP C */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80c];
+						op_80sub8();
+						break;
+
+					case 0xBA:	/* BA CMP D */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80d];
+						op_80sub8();
+						break;
+
+					case 0xBB:	/* BB CMP E */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80e];
+						op_80sub8();
+						break;
+
+					case 0xBC:	/* BC CMP H */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80h];
+						op_80sub8();
+						break;
+
+					case 0xBD:	/* BD CMP L */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80l];
+						op_80sub8();
+						break;
+
+					case 0xBE:	/* BE CMP M */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (useseg, regs.wordregs[reg80hl] );
+						op_80sub8();
+						break;
+
+					case 0xBF:	/* BF CMP A */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = regs.byteregs[reg80a];
+						op_80sub8();
+						break;
+
+					case 0xC0:	/* C0 RNZ */
+						if (!zf) {
+								ip = pop80();
+							}
+						break;
+
+					case 0xC1:	/* C1 POP B */
+						regs.wordregs[reg80bc] = pop80();
+						break;
+
+					case 0xC2:	/* C2 JNZ Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (!zf) {
+								ip = temp16;
+							}
+						break;
+
+					case 0xC3:	/* C3 JMP Iw */
+					case 0xCB:	/* CB JMP Iw */
+						ip = getmem16 (segregs[regcs], ip);
+						break;
+
+					case 0xC4:	/* C4 CNZ Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (!zf) {
+								push80 (ip);
+								ip = temp16;
+							}
+						break;
+
+					case 0xC5:	/* C5 PUSH B */
+						push80(regs.wordregs[reg80bc]);
+						break;
+
+					case 0xC6:	/* C6 ADI Ib */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						op_80add8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xC7: /* C7 RST 0 */
+						push80 (ip);
+						ip = 0x0000;
+						break;
+
+					case 0xC8:	/* C8 RZ */
+						if (zf) {
+								ip = pop80();
+							}
+						break;
+
+					case 0xC9:	/* C9 RET */
+					case 0xD9:	/* D9 RET */
+						ip = pop80();
+						break;
+
+					case 0xCA:	/* CA JZ Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (zf) {
+								ip = temp16;
+							}
+						break;
+
+					case 0xCC:	/* CC CZ Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (zf) {
+								push80 (ip);
+								ip = temp16;
+							}
+						break;
+
+					case 0xCD: /* CD CALL Iw */
+					case 0xDD: /* CD CALL Iw */
+					case 0xFD: /* CD CALL Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						push80 (ip);
+						ip = temp16;
+						break;
+
+					case 0xCE:	/* CE ACI Ib */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						op_80adc8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xCF: /* CF RST 1 */
+						push80 (ip);
+						ip = 0x0008;
+						break;
+
+					case 0xD0:	/* C0 RNC */
+						if (!cf) {
+								ip = pop80();
+							}
+						break;
+
+					case 0xD1:	/* D1 POP D */
+						regs.wordregs[reg80de] = pop80();
+						break;
+
+					case 0xD2:	/* D2 JNC Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (!cf) {
+								ip = temp16;
+							}
+						break;
+
+					case 0xD3:	/* D3 OUT Ib */
+						oper1b = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						portout (oper1b, regs.byteregs[reg80a]);
+						break;
+
+					case 0xD4:	/* D4 CNC Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (!cf) {
+								push80 (ip);
+								ip = temp16;
+							}
+						break;
+
+					case 0xD5:	/* D5 PUSH D */
+						push80(regs.wordregs[reg80de]);
+						break;
+
+					case 0xD6:	/* D6 SUI Ib */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						op_80sub8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xD7: /* D7 RST 2 */
+						push80 (ip);
+						ip = 0x0010;
+						break;
+
+					case 0xD8:	/* D8 RZ */
+						if (cf) {
+								ip = pop80();
+							}
+						break;
+
+					case 0xDA:	/* DA JC Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (cf) {
+								ip = temp16;
+							}
+						break;
+
+					case 0xDB:	/* DB IN Ib */
+						oper1b = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						regs.byteregs[reg80a] = (uint8_t) portin (oper1b);
+						break;
+
+					case 0xDC:	/* DC CC Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (cf) {
+								push80 (ip);
+								ip = temp16;
+							}
+						break;
+
+					case 0xDE:	/* DE SBI Ib */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						op_80sbb8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xDF: /* CF RST 3 */
+						push80 (ip);
+						ip = 0x0018;
+						break;
+
+					case 0xE0:	/* E0 RPO */
+						if (!pf) {
+								ip = pop80();
+							}
+						break;
+
+					case 0xE1:	/* E1 POP H */
+						regs.wordregs[reg80hl] = pop80();
+						break;
+
+					case 0xE2:	/* E2 JPO Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (!pf) {
+								ip = temp16;
+							}
+						break;
+
+					case 0xE3:	/* E3 XTHL */
+						oper1 = getmem16 (segregs[regds], regs.wordregs[reg80sp] );
+						putmem16 (segregs[regds], regs.wordregs[reg80sp], regs.wordregs[reg80hl] );
+						putreg16 (reg80hl, oper1);
+						break;
+
+					case 0xE4:	/* E4 CPO Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (!pf) {
+								push80 (ip);
+								ip = temp16;
+							}
+						break;
+
+					case 0xE5:	/* E5 PUSH H */
+						push80(regs.wordregs[reg80hl]);
+						break;
+
+					case 0xE6:	/* E6 ANI Ib */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						op_80and8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xE7: /* E7 RST 4 */
+						push80 (ip);
+						ip = 0x0020;
+						break;
+
+					case 0xE8:	/* E8 RPE */
+						if (pf) {
+								ip = pop80();
+							}
+						break;
+
+					case 0xE9:	/* E9 PCHL */
+						ip = regs.wordregs[reg80hl];
+						break;
+
+					case 0xEA:	/* EA JPE Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (pf) {
+								ip = temp16;
+							}
+						break;
+
+					case 0xEB:	/* EB XCHG */
+						oper1 = regs.wordregs[reg80de];
+						putreg16 (reg80de, regs.wordregs[reg80hl] );
+						putreg16 (reg80hl, oper1);
+						break;
+
+					case 0xEC:	/* EC CPE Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (pf) {
+								push80 (ip);
+								ip = temp16;
+							}
+						break;
+
+					case 0xED: /* ED CALL Iw */
+						temp16 = getmem8 (segregs[regcs], ip);
+						switch (temp16) {
+								case 0xED:	/* ED ED CALLN Ib */
+									StepIP (1);
+									oper1b = getmem8 (segregs[regcs], ip);
+									StepIP (1);
+									intcall86 (oper1b);
+									md = 1;
+									break;
+
+								case 0xFD:	/* ED FD RETEM */
+									ip = pop();
+									segregs[regcs] = pop();
+									decodeflagsword (pop() );
+									mdenable = 0;
+									break;
+
+								default:
+									temp16 = getmem16 (segregs[regcs], ip);
+									StepIP (2);
+									push80 (ip);
+									ip = temp16;
+									break;
+						}
+						break;
+
+					case 0xEE:	/* EE XRI Ib */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						op_80xor8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xEF: /* CF RST 5 */
+						push80 (ip);
+						ip = 0x0028;
+						break;
+
+					case 0xF0:	/* F0 RP */
+						if (!sf) {
+								ip = pop80();
+							}
+						break;
+
+					case 0xF1:	/* F1 POP PSW */
+						temp16 = pop80();
+						decodeflagsword ( (makeflagsword() & 0xFF00) | (temp16 & 0x00FF) );
+						regs.byteregs[reg80a] = (temp16 & 0xFF00) >> 8;
+						break;
+
+					case 0xF2:	/* F2 JP Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (!sf) {
+								ip = temp16;
+							}
+						break;
+
+					case 0xF3:	/* F3 DI */
+						ifl = 0;
+						break;
+
+					case 0xF4:	/* F4 CP Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (!sf) {
+								push80 (ip);
+								ip = temp16;
+							}
+						break;
+
+					case 0xF5:	/* F5 PUSH PSW */
+						temp16 = (makeflagsword() & 0x00FF) | (regs.byteregs[reg80a] << 8);
+						push80(temp16);
+						break;
+
+					case 0xF6:	/* F6 ORI Ib */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						op_80or8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xF7: /* F7 RST 6 */
+						push80 (ip);
+						ip = 0x0030;
+						break;
+
+					case 0xF8:	/* F8 RM */
+						if (sf) {
+								ip = pop80();
+							}
+						break;
+
+					case 0xF9:	/* FB SPHL */
+						putreg16 (reg80sp, regs.wordregs[reg80hl] );
+						break;
+
+					case 0xFA:	/* FA JM Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (sf) {
+								ip = temp16;
+							}
+						break;
+
+					case 0xFB:	/* FD EI */
+						ifl = 1;
+						break;
+
+					case 0xFC:	/* FC CM Iw */
+						temp16 = getmem16 (segregs[regcs], ip);
+						StepIP (2);
+						if (sf) {
+								push80 (ip);
+								ip = temp16;
+							}
+						break;
+
+					case 0xFE:	/* FE CPI Ib */
+						oper1b = regs.byteregs[reg80a];
+						oper2b = getmem8 (segregs[regcs], ip);
+						StepIP (1);
+						op_80sub8();
+						regs.byteregs[reg80a] = res8;
+						break;
+
+					case 0xFF: /* FF RST 7 */
+						push80 (ip);
+						ip = 0x0038;
+						break;
+				}
+				totalexec++;
+			}
+			else
+#endif /* CPU_EMULATE_8080 */
+			{
 			while (!docontinue) {
 					segregs[regcs] = segregs[regcs] & 0xFFFF;
 					ip = ip & 0xFFFF;
@@ -1521,6 +3220,30 @@ void exec86 (uint32_t execloops) {
 #ifdef CPU_ALLOW_POP_CS //only the 8086/8088 does this.
 					case 0xF: //0F POP CS
 						segregs[regcs] = pop();
+						break;
+#elif defined CPU_EMULATE_8080
+					case 0xF: //0F POP CS
+						oper1b = getmem8 (segregs[regcs], ip);
+						switch (oper1b) {
+								case 0xFF:	/* 0F FF BRKEM Ib */
+									StepIP (1);
+									oper2b = getmem8 (segregs[regcs], ip);
+									StepIP (1);
+									intcall86 (oper2b);
+									mdenable = 1;
+									md = 0;
+									break;
+
+								default:
+#ifdef CPU_ALLOW_ILLEGAL_OP_EXCEPTION
+									intcall86 (6); /* trip invalid opcode exception (this occurs on the 80186+, 8086/8088 CPUs treat them as NOPs. */
+												   /* technically they aren't exactly like NOPs in most cases, but for our pursoses, that's accurate enough. */
+#endif
+									if (verbose) {
+											printf ("Illegal opcode: %02X %02X /%X @ %04X:%04X\n", getmem8(savecs, saveip), getmem8(savecs, saveip+1), (getmem8(savecs, saveip+2) >> 3) & 7, savecs, saveip);
+										}
+									break;
+						}
 						break;
 #endif
 
@@ -2695,9 +4418,9 @@ void exec86 (uint32_t execloops) {
 
 					case 0x9C:	/* 9C PUSHF */
 #ifdef CPU_SET_HIGH_FLAGS
-						push (makeflagsword() | 0xF800);
+						push (makeflagsword() | 0xF000); /* running in native mode */
 #else
-						push (makeflagsword() | 0x0800);
+						push (makeflagsword() );
 #endif
 						break;
 
@@ -3282,6 +5005,10 @@ void exec86 (uint32_t execloops) {
 					case 0xD4:	/* D4 AAM I0 */
 						oper1 = getmem8 (segregs[regcs], ip);
 						StepIP (1);
+#ifdef CPU_DECIMAL_ONLY_AAD_AAM /* V20 only does decimal AAM */
+						regs.byteregs[regah] = (regs.byteregs[regal] / 10) & 255;
+						regs.byteregs[regal] = (regs.byteregs[regal] % 10) & 255;
+#else
 						if (!oper1) {
 								intcall86 (0);
 								break;
@@ -3289,15 +5016,22 @@ void exec86 (uint32_t execloops) {
 
 						regs.byteregs[regah] = (regs.byteregs[regal] / oper1) & 255;
 						regs.byteregs[regal] = (regs.byteregs[regal] % oper1) & 255;
+#endif
 						flag_szp16 (regs.wordregs[regax]);
 						break;
 
 					case 0xD5:	/* D5 AAD I0 */
 						oper1 = getmem8 (segregs[regcs], ip);
 						StepIP (1);
+#ifdef CPU_DECIMAL_ONLY_AAD_AAM /* V20 only does decimal AAD */
+						regs.byteregs[regal] = (regs.byteregs[regah] * 10 + regs.byteregs[regal]) & 255;
+						regs.byteregs[regah] = 0;
+						flag_szp16 (regs.byteregs[regah] * 10 + regs.byteregs[regal]);
+#else
 						regs.byteregs[regal] = (regs.byteregs[regah] * oper1 + regs.byteregs[regal]) & 255;
 						regs.byteregs[regah] = 0;
 						flag_szp16 (regs.byteregs[regah] * oper1 + regs.byteregs[regal]);
+#endif
 						sf = 0;
 						break;
 
@@ -3522,6 +5256,7 @@ void exec86 (uint32_t execloops) {
 							}
 						break;
 				}
+			}
 
 skipexecution:
 			if (!running) {

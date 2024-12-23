@@ -3,14 +3,24 @@ BINPATH=/usr/bin
 DATAPATH=/usr/share/fake86
 CFLAGS=-O2 -DPATH_DATAFILES=\"$(DATAPATH)/\"
 INCLUDE=-Isrc/fake86
-LIBS=-lpthread
+LIBS=-lpthread -lX11
 SDLFLAGS=`sdl-config --cflags --libs`
 
-all: fake86-src imagegen-src
+all: fake-src imagegen-src
 
-fake86-src:
-	$(CC) $(SRCFILES) -o bin/fake86 $(CFLAGS) $(INCLUDE) $(LIBS) $(SDLFLAGS)
-	chmod a+x bin/fake86
+fake-src: bin/fake86-8086 bin/fake86-80186 bin/fake86-v20
+
+bin/fake86-8086:
+	$(CC) $(SRCFILES) -o bin/fake86-8086 $(CFLAGS) $(INCLUDE) $(LIBS) $(SDLFLAGS) -DCPU_8086
+	chmod a+x bin/fake86-8086
+
+bin/fake86-80186:
+	$(CC) $(SRCFILES) -o bin/fake86-80186 $(CFLAGS) $(INCLUDE) $(LIBS) $(SDLFLAGS) -DCPU_80186
+	chmod a+x bin/fake86-80186
+
+bin/fake86-v20:
+	$(CC) $(SRCFILES) -o bin/fake86-v20 $(CFLAGS) $(INCLUDE) $(LIBS) $(SDLFLAGS) -DCPU_V20
+	chmod a+x bin/fake86-v20
 
 imagegen-src:
 	$(CC) src/imagegen/imagegen.c -o bin/imagegen $(CFLAGS)

@@ -56,6 +56,19 @@
 #define regbh 7
 #endif
 
+#define reg80b regch
+#define reg80c regcl
+#define reg80d regdh
+#define reg80e regdl
+#define reg80h regbh
+#define reg80l regbl
+#define reg80a regal
+
+#define reg80bc regcx
+#define reg80de regdx
+#define reg80hl regbx
+#define reg80sp regbp
+
 union _bytewordregs_ {
 	uint16_t wordregs[8];
 	uint8_t byteregs[8];
@@ -90,6 +103,7 @@ struct addrmodecache_s {
 #define putsegreg(regid, writeval)	segregs[regid] = writeval
 #define segbase(x)	((uint32_t) x << 4)
 
+#ifndef CPU_EMULATE_8080
 #define makeflagsword() \
 	( \
 	2 | (uint16_t) cf | ((uint16_t) pf << 2) | ((uint16_t) af << 4) | ((uint16_t) zf << 6) | ((uint16_t) sf << 7) | \
@@ -108,3 +122,27 @@ struct addrmodecache_s {
 	df = (temp16 >> 10) & 1; \
 	of = (temp16 >> 11) & 1; \
 	}
+#else /* CPU_EMULATE_8080 */
+#define makeflagsword() \
+	( \
+	2 | (uint16_t) cf | ((uint16_t) pf << 2) | ((uint16_t) af << 4) | ((uint16_t) zf << 6) | ((uint16_t) sf << 7) | \
+	((uint16_t) tf << 8) | ((uint16_t) ifl << 9) | ((uint16_t) df << 10) | ((uint16_t) of << 11) | ((uint16_t) md << 15) \
+	)
+
+#define decodeflagsword(x) { \
+	temp16 = x; \
+	cf = temp16 & 1; \
+	pf = (temp16 >> 2) & 1; \
+	af = (temp16 >> 4) & 1; \
+	zf = (temp16 >> 6) & 1; \
+	sf = (temp16 >> 7) & 1; \
+	tf = (temp16 >> 8) & 1; \
+	ifl = (temp16 >> 9) & 1; \
+	df = (temp16 >> 10) & 1; \
+	of = (temp16 >> 11) & 1; \
+	if (mdenable) { \
+		md = (temp16 >> 15) & 1; \
+	} \
+	}
+#endif /* CPU_EMULATE_8080 */
+

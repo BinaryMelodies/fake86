@@ -7,19 +7,26 @@
 //you will likely get some unexpected/bad results!
 //#define CPU_8086
 //#define CPU_186
-#define CPU_V20
+//#define CPU_V20
 //#define CPU_286
+//#define CPU_386
 
 #if defined(CPU_8086)
+	#define CPU_SEGMENT_WRAPAROUND
 	#define CPU_CLEAR_ZF_ON_MUL
 	#define CPU_ALLOW_POP_CS
-#else
-	#define CPU_ALLOW_ILLEGAL_OP_EXCEPTION
-	#define CPU_LIMIT_SHIFT_COUNT
 #endif
 
 #if defined(CPU_V20)
+	#define CPU_SEGMENT_WRAPAROUND
 	#define CPU_NO_SALC
+	#define CPU_DECIMAL_ONLY_AAD_AAM
+	#define CPU_EMULATE_8080
+#endif
+
+#if !defined(CPU_8086) && !defined(CPU_V20)
+	#define CPU_LIMIT_SHIFT_COUNT
+	#define CPU_ALLOW_ILLEGAL_OP_EXCEPTION
 #endif
 
 #if defined(CPU_286) || defined(CPU_386)
