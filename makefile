@@ -30,7 +30,9 @@ install:
 	mkdir -p $(BINPATH)
 	mkdir -p $(DATAPATH)
 	chmod a-x data/*
-	cp -p bin/fake86 $(BINPATH)
+	cp -p bin/fake86-8086 $(BINPATH)
+	cp -p bin/fake86-80186 $(BINPATH)
+	cp -p bin/fake86-v20 $(BINPATH)
 	cp -p bin/imagegen $(BINPATH)
 	cp -p data/asciivga.dat $(DATAPATH)
 	cp -p data/pcxtbios.bin $(DATAPATH)
@@ -42,9 +44,13 @@ clean:
 	rm -f src/fake86/*~
 	rm -f src/imagegen/*.o
 	rm -f src/imagegen/*~
-	rm -f bin/fake86
+	rm -f bin/fake86-8086
+	rm -f bin/fake86-80186
+	rm -f bin/fake86-v20
 	rm -f bin/imagegen
 
 uninstall:
-	rm -f $(BINPATH)/fake86
+	rm -f $(BINPATH)/fake86-8086
+	rm -f $(BINPATH)/fake86-80186
+	rm -f $(BINPATH)/fake86-v20
 	rm -f $(BINPATH)/imagegen
