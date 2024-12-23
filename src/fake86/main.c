@@ -56,7 +56,7 @@ extern uint64_t cached_access_count, uncached_access_count;
 
 extern uint8_t scrmodechange, doaudio;
 extern uint64_t totalexec, totalframes;
-uint64_t starttick, endtick, lasttick;
+uint64_t starttick, endtick, lasttick = 0;
 
 uint8_t *biosfile = NULL, verbose = 0, cgaonly = 0, useconsole = 0;
 uint32_t speed = 0;

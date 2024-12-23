@@ -42,8 +42,9 @@ extern void tickssource();
 extern void tickadlib();
 extern void tickBlaster();
 
-uint64_t hostfreq = 1000000, lasttick = 0, curtick = 0, tickgap, i8253tickgap, lasti8253tick, scanlinetiming, lastscanlinetick, curscanline = 0;
+uint64_t hostfreq = 1000000, curtick = 0, tickgap, i8253tickgap, lasti8253tick, scanlinetiming, lastscanlinetick, curscanline = 0;
 uint64_t sampleticks, lastsampletick, ssourceticks, lastssourcetick, adlibticks, lastadlibtick, lastblastertick, gensamplerate;
+extern uint64_t lasttick;
 
 uint16_t pit0counter = 65535;
 extern uint64_t totalexec;
