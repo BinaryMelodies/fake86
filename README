@@ -1,3 +1,21 @@
+A quick and dirty update that incorporates the 8080 emulation mode for V20
+processors. Note that in its current state, full NEC V20 emulation is not
+supported, several instructions unique to NEC CPUs are missing.
+
+Here is a note from the original author, available at
+https://sourceforge.net/projects/fake86/, followed by the original contents of
+the README file.
+
+===============================================================================
+
+This project is very, very old and it's long been abandoned.
+
+Please start using the successor to Fake86, called XTulator.
+
+https://github.com/mikechambers84/XTulator
+
+===============================================================================
+
 Fake86: A portable, open-source 8086 PC emulator.
 Copyright (C)2010-2013 Mike Chambers
 
