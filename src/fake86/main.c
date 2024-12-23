@@ -28,6 +28,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <memory.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "mutex.h"
 #ifdef _WIN32
 CRITICAL_SECTION screenmutex;
@@ -47,7 +50,7 @@ extern void reset86();
 extern void exec86 (uint32_t execloops);
 extern uint8_t initscreen (uint8_t *ver);
 extern void VideoThread();
-extern doscrmodechange();
+extern void doscrmodechange();
 extern void handleinput();
 
 #ifdef CPU_ADDR_MODE_CACHE
